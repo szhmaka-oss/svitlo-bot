@@ -155,7 +155,6 @@ def absolute_outages(days):
         for a, b, st in runs_in_day(days[iso]):
             if st != 1:
                 continue
-              # --- продовження файлу ---
             start, end = base + timedelta(minutes=a), base + timedelta(minutes=b)
             if items and items[-1][1] == start:
                 items[-1][1] = end
@@ -238,4 +237,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
- 
