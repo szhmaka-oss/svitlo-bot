@@ -155,3 +155,86 @@ def absolute_outages(days):
         for a, b, st in runs_in_day(days[iso]):
             if st != 1:
                 continue
+# --- продовження файлу ---
+            start, end = base + timedelta(minutes=a), base + timedelta(minutes=b)
+            if items and items[-1][1] == start:
+                items[-1][1] = end
+            else:
+                items.append([start, end])
+    return items
+
+
+def send(text):
+    token, chat = os.environ.get("TG_TOKEN"), os.environ.get("TG_CHAT_ID")
+    if not token or not chat:
+        print("--- (TG_TOKEN або TG_CHAT_ID не задано, лише друк) ---")
+        print(text)
+        return
+    data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
+    req = urllib.request.Request("https://api.telegram.org/bot%s/sendMessage" % token, data=data)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        if r.status != 200:
+            raise RuntimeError("Telegram відповів %s" % r.status)
+
+
+def load_state():
+    try:
+        with open(STATE_PATH, encoding="utf-8") as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        st = {}
+    st.setdefault("days", {})
+    st.setdefault("reminded", [])
+    return st
+
+
+def main():
+    now = now_kyiv()
+    today = now.date()
+    gkey = GROUP_KEY or group_key(QUEUE)
+
+    raw = fetch_json()
+    days, groups_seen = parse_days(raw, gkey)
+    if not days:
+        print("Не знайшов дані для групи %s. Групи у файлі: %s" % (gkey, ", ".join(groups_seen) or "немає"),
+              file=sys.stderr)
+        print("Перевірте DATA_URL і GROUP_KEY.", file=sys.stderr)
+        return 1
+    days = {d: s for d, s in days.items() if d >= today.isoformat()}
+
+    state = load_state()
+    messages = []
+
+    changed = []
+    for iso in sorted(days):
+        h = hashlib.sha1(json.dumps(days[iso]).encode()).hexdigest()[:12]
+        if state["days"].get(iso) != h:
+            changed.append(iso)
+            state["days"][iso] = h
+    if changed:
+        body = "\n\n".join(format_day(iso, days[iso], today) for iso in changed)
+        messages.append("Графік оновлено, черга %s\n\n%s" % (QUEUE, body))
+
+    for start, end in absolute_outages(days):
+        left = (start - now).total_seconds() / 60
+        key = start.strftime("%Y-%m-%dT%H:%M")
+        if 0 < left <= REMIND_MIN and key not in state["reminded"]:
+            messages.append("Відключення о %s, через %s\nДо %s (%s). Зарядіть телефон і павербанк."
+                            % (start.strftime("%H:%M"), dur(int(left)), end.strftime("%H:%M"),
+                               dur(int((end - start).total_seconds() // 60))))
+            state["reminded"].append(key)
+
+    cutoff = (today - timedelta(days=2)).isoformat()
+    state["reminded"] = [k for k in state["reminded"] if k[:10] >= cutoff]
+    state["days"] = {d: h for d, h in state["days"].items() if d >= cutoff}
+
+    for m in messages:
+        send(m)
+    with open(STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=1, sort_keys=True)
+    print("Готово: надіслано повідомлень %d." % len(messages))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
